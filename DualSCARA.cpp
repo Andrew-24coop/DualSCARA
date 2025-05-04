@@ -1,8 +1,11 @@
 // DualSCARA.cpp
 #include "DualSCARA.h"
 
-DualSCARA::DualSCARA(float L1, float L2, GStepper2<STEPPER2WIRE> &stepper1, GStepper2<STEPPER2WIRE> &stepper2)
-    : l1(L1), l2(L2), stepper1(stepper1), stepper2(stepper2) {}
+DualSCARA::DualSCARA(float L1, float L2,
+    GStepper2<STEPPER2WIRE> &stepper1,
+    GStepper2<STEPPER2WIRE> &stepper2,
+    LiquidCrystal_I2C &lcd)
+: l1(L1), l2(L2), stepper1(stepper1), stepper2(stepper2), _lcd(lcd) {}
 
 void DualSCARA::forwardKinematics(float theta1, float theta2, float &x, float &y) {
     theta1 = radians(theta1);
@@ -20,6 +23,26 @@ bool DualSCARA::inverseKinematics(float x, float y, float &theta1, float &theta2
     return true;
 }
 
+void DualSCARA::updateDisplay() {
+    float theta1 = stepper1.getCurrent() * (360.0 / 6400.0);
+    float theta2 = stepper2.getCurrent() * (360.0 / 6400.0);
+
+    float x, y;
+    forwardKinematics(theta1, theta2, x, y);
+
+    _lcd.clear();
+    _lcd.setCursor(0, 0);
+    _lcd.print(theta1);
+    _lcd.print("    ");
+    _lcd.print(theta2);
+
+    _lcd.setCursor(0, 1);
+    _lcd.print("X:");
+    _lcd.print(x, 1);
+    _lcd.print("  Y:");
+    _lcd.print(y, 1);
+}
+
 void DualSCARA::moveTo(float x, float y) {
     float theta1, theta2;
     if (!inverseKinematics(x, y, theta1, theta2)) {
@@ -32,12 +55,13 @@ void DualSCARA::moveTo(float x, float y) {
 
     stepper1.setTarget(steps1);
     stepper2.setTarget(steps2);
-
-    while (!stepper1.ready() || !stepper2.ready()) {
+    
+    uint16_t tmr = millis();
+    while ((!stepper1.ready() || !stepper2.ready()) && (millis() - tmr < 5000)) {
         stepper1.tick();
         stepper2.tick();
     }
-
+    updateDisplay();
     Serial.print("Moved to: X = ");
     Serial.print(x);
     Serial.print(", Y = ");
@@ -63,25 +87,51 @@ void DualSCARA::moveLinear(float x1, float y1) {
 
         stepper1.setTarget(steps1);
         stepper2.setTarget(steps2);
-        /*
-        while (!stepper1.ready() || !stepper2.ready()) {
-            stepper1.tick();
-            stepper2.tick();
-        }
-        */
+
+        updateDisplay();
+
         uint16_t tmr = millis();
         while (millis() - tmr < 50) {
             stepper1.tick();
             stepper2.tick();
         }
     }
-    
-    Serial.print("Linear move to: X = ");
-    Serial.print(x1);
-    Serial.print(", Y = ");
-    Serial.println(y1);
 }
 
-void DualSCARA::moveArc(float x, float y, float i, float j) {
-    // Arc movement implementation placeholder
+void DualSCARA::moveArc(float x, float y, float i, float j, bool dir) {
+    float cx = x - i;
+    float cy = y - j;
+    float r = sqrt(i * i + j * j);
+    
+    float theta_start = atan2(-j, -i);
+    float theta_end = atan2(y - cy, x - cx);
+    
+    if (dir) {
+        if (theta_end < theta_start) theta_end += 2 * PI;
+    } else {
+        if (theta_start < theta_end) theta_start += 2 * PI;
+    }
+    
+    int steps = 100;
+    for (int i = 0; i <= steps; i++) {
+        float t = (float)i / (float)steps;
+        float theta = theta_start + t * (theta_end - theta_start);
+        float xt = cx + r * cos(theta);
+        float yt = cy + r * sin(theta);
+        
+        float theta1, theta2;
+        if (!inverseKinematics(xt, yt, theta1, theta2)) continue;
+        
+        long steps1 = (long)(theta1 * (6400.0 / 360.0));
+        long steps2 = (long)(theta2 * (6400.0 / 360.0));
+
+        stepper1.setTarget(steps1);
+        stepper2.setTarget(steps2);
+        
+        uint16_t tmr = millis();
+        while (millis() - tmr < 50) {
+            stepper1.tick();
+            stepper2.tick();
+        }
+    }
 }
